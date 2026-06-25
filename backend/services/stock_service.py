@@ -1,58 +1,60 @@
 """
-Stock Service
+Stock Service — PostgreSQL Native
 Business logic for inventory/stock management
-Extracted from stock_module.py (1242 lines → modular)
+Refactored from Motor → PostgreSQL
 """
 
 from typing import List, Dict, Any, Optional
-from motor.motor_asyncio import AsyncIOMotorDatabase
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+from db.models import ProduitModel
 
 
 class StockService:
     """Stock/Inventory business logic service"""
     
-    def __init__(self, db: AsyncIOMotorDatabase):
-        self.db = db
+    def __init__(self, session: AsyncSession):
+        self.session = session
     
     async def enrich_stock_with_products(
         self,
-        docs: List[Dict[str, Any]]
+        stock_movements: List[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
         """
         Enrich stock movements with product details (bulk)
+        PostgreSQL-native version
         """
-        if not docs:
-            return docs
+        if not stock_movements:
+            return stock_movements
         
+        # Extract product IDs (handle both field names)
         product_ids = {
-            d.get("produit_id") or d.get("product_id") 
-            for d in docs 
-            if d.get("produit_id") or d.get("product_id")
+            m.get("produit_id") or m.get("product_id") 
+            for m in stock_movements 
+            if m.get("produit_id") or m.get("product_id")
         }
         
         if not product_ids:
-            return docs
+            return stock_movements
         
-        products = await self.db.produits.find(
-            {"$or": [
-                {"product_id": {"$in": list(product_ids)}},
-                {"produit_id": {"$in": list(product_ids)}}
-            ]}
-        ).to_list(None)
+        # Bulk fetch products
+        stmt = select(ProduitModel).where(
+            ProduitModel.id.in_(list(product_ids))
+        )
+        result = await self.session.execute(stmt)
+        products = result.scalars().all()
         
-        products_map = {}
-        for p in products:
-            pid = p.get("product_id") or p.get("produit_id")
-            products_map[pid] = p
+        products_map = {p.id: p for p in products}
         
-        for doc in docs:
-            pid = doc.get("produit_id") or doc.get("product_id")
-            if pid and pid in products_map:
-                product = products_map[pid]
-                doc["produit_nom"] = product.get("titre") or product.get("nom")
-                doc["produit_reference"] = product.get("reference")
+        # Enrich movements
+        for movement in stock_movements:
+            product_id = movement.get("produit_id") or movement.get("product_id")
+            if product_id in products_map:
+                product = products_map[product_id]
+                movement["produit_nom"] = product.titre or product.nom
+                movement["produit_reference"] = product.reference
         
-        return docs
+        return stock_movements
     
     async def calculate_stock_totals(
         self,

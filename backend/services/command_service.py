@@ -1,46 +1,52 @@
 """
-Command Service
+Command Service — PostgreSQL Native
 Business logic for order/command management
-Extracted from commandes_module.py (1863 lines → modular)
+Refactored from Motor → PostgreSQL
 """
 
 from typing import List, Dict, Any, Optional
-from motor.motor_asyncio import AsyncIOMotorDatabase
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+from db.models import CommandeModel, ClientModel
 
 
 class CommandService:
     """Command business logic service"""
     
-    def __init__(self, db: AsyncIOMotorDatabase):
-        self.db = db
+    def __init__(self, session: AsyncSession):
+        self.session = session
     
     async def enrich_commands_with_clients(
         self,
-        docs: List[Dict[str, Any]]
+        commands: List[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
         """
         Enrich command list with client information (bulk query)
+        PostgreSQL-native version
         """
-        if not docs:
-            return docs
+        if not commands:
+            return commands
         
-        client_ids = {d.get("client_id") for d in docs if d.get("client_id")}
+        # Extract client IDs
+        client_ids = {c.get("client_id") for c in commands if c.get("client_id")}
         if not client_ids:
-            return docs
+            return commands
         
-        clients = await self.db.clients.find(
-            {"client_id": {"$in": list(client_ids)}}
-        ).to_list(None)
-        clients_map = {c["client_id"]: c for c in clients}
+        # Bulk fetch clients
+        stmt = select(ClientModel).where(ClientModel.id.in_(list(client_ids)))
+        result = await self.session.execute(stmt)
+        clients = result.scalars().all()
+        clients_map = {c.id: c for c in clients}
         
-        for doc in docs:
-            if doc.get("client_id"):
-                client = clients_map.get(doc["client_id"])
-                if client:
-                    doc["client_nom"] = client.get("nom")
-                    doc["client_tel"] = client.get("telephone")
+        # Enrich commands
+        for cmd in commands:
+            client_id = cmd.get("client_id")
+            if client_id in clients_map:
+                client = clients_map[client_id]
+                cmd["client_nom"] = client.nom_client
+                cmd["client_tel"] = client.telephone
         
-        return docs
+        return commands
     
     async def calculate_command_totals(
         self,
@@ -71,11 +77,11 @@ class CommandService:
         if not data.get("lignes") or len(data.get("lignes", [])) == 0:
             return False, "At least 1 line required"
         
-        # Verify client exists
-        client = await self.db.clients.find_one(
-            {"client_id": data["client_id"]},
-            {"_id": 1}
-        )
+        # Verify client exists (PostgreSQL)
+        stmt = select(ClientModel).where(ClientModel.id == data["client_id"])
+        result = await self.session.execute(stmt)
+        client = result.scalar_one_or_none()
+        
         if not client:
             return False, "Client not found"
         
