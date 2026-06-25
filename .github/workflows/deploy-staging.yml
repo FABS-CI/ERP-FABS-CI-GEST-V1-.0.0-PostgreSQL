@@ -1,0 +1,42 @@
+name: Deploy to Railway Staging
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Deploy to Railway
+        run: |
+          npm install -g @railway/cli
+          railway login --token ${{ secrets.RAILWAY_TOKEN }}
+          railway up --service backend --environment staging
+          railway up --service frontend --environment staging
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+      
+      - name: Run Health Check
+        run: |
+          sleep 10  # Wait for deployment to stabilize
+          curl -f https://backend-staging.railway.app/health || exit 1
+      
+      - name: Notify Slack
+        if: success()
+        run: |
+          curl -X POST ${{ secrets.SLACK_WEBHOOK }} \
+            -H 'Content-Type: application/json' \
+            -d '{
+              "text": "✅ Staging deployment successful",
+              "blocks": [{
+                "type": "section",
+                "text": {
+                  "type": "mrkdwn",
+                  "text": "Backend: https://backend-staging.railway.app\nFrontend: https://frontend-staging.railway.app"
+                }
+              }]
+            }'
